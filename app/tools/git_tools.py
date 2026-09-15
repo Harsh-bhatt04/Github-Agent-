@@ -31,3 +31,21 @@ def git_diff() -> str:
         return f"Git error: {result.stderr.strip()}"
 
     return result.stdout.strip() or "No changes to show."
+
+def git_add(files: list[str]) -> str:
+    """Stage the specified files."""
+
+    if not files:
+        return "No files provided."
+
+    result = subprocess.run(
+        ["git", "add", *files],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    if result.returncode != 0:
+        return f"Git error: {result.stderr.strip()}"
+
+    return f"Successfully staged: {', '.join(files)}"
