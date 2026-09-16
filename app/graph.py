@@ -1,55 +1,61 @@
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.prebuilt import ToolNode
 from langgraph.types import interrupt
 
-from app.config import GOOGLE_API_KEY
 from app.state import AgentState
-from app.tools.git_tools import git_add, git_commit, git_diff, git_status
+from app.tools.git_tools import git_add, git_commit
 
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
-    google_api_key=GOOGLE_API_KEY,
-)
+def detect_git_action(request: str) -> str:
+    """Detect the Git operation requested by the user."""
 
-tools = [git_status, git_diff, git_add, git_commit]
+    request = request.lower()
 
-llm_with_tools = llm.bind_tools(tools)
+    if "commit" in request:
+        return "commit"
+
+    if "add" in request or "stage" in request:
+        return "add"
+
+    return "unknown"
 
 
-def agent(state: AgentState):
-    messages = [
-        SystemMessage(
-            content=(
-                "You are a Git assistant.\n\n"
-                "Git add rules:\n"
-                "- If the user asks to add or stage all files, call git_add "
-                "without specifying files.\n"
-                "- If the user specifies file paths, call git_add with only "
-                "those files.\n"
-                "- Never stage unspecified files.\n\n"
-                "Git commit rules:\n"
-                "- If the user asks to commit and provides a commit message, "
-                "call git_commit with that message.\n"
-                "- If the user asks to commit but does not provide a message, "
-                "do not invent one."
-            )
-        ),
-        *state["messages"],
+def extract_files(request: str) -> list[str] | None:
+    """Extract file paths from a Git add request.
+
+    Returns None when the user wants all files.
+    """
+
+    request_lower = request.lower()
+
+    all_keywords = [
+        "all files",
+        "all changes",
+        "everything",
+        "all",
     ]
 
-    response = llm_with_tools.invoke(messages)
+    if any(keyword in request_lower for keyword in all_keywords):
+        return None
 
-    return {
-        "messages": [response],
-    }
+    words = request.split()
+
+    files = []
+
+    for word in words:
+        word = word.strip(",.")
+
+        if "/" in word or "." in word:
+            files.append(word)
+
+    return files or None
 
 
 def request_commit_message(state: AgentState):
-    commit_message = interrupt(
+    """Ask the user for a commit message."""
+
+    message = interrupt(
         {
             "type": "commit_message",
             "message": "Please provide a commit message.",
@@ -59,91 +65,166 @@ def request_commit_message(state: AgentState):
     return {
         "messages": [
             HumanMessage(
-                content=f"Use this commit message: {commit_message}"
+                content=f"Commit message: {message}"
             )
         ]
     }
 
 
-def approval(state: AgentState):
-    last_message = state["messages"][-1]
+def request_approval(state: AgentState):
+    """Ask the user before executing a Git mutation."""
 
-    tool_call = last_message.tool_calls[0]
+    action = state["action"]
+    arguments = state["arguments"]
 
-    approval_result = interrupt(
+    approval = interrupt(
         {
             "type": "approval",
-            "action": tool_call["name"],
-            "arguments": tool_call["args"],
-            "message": f"Approve {tool_call['name']}?",
+            "action": action,
+            "arguments": arguments,
+            "message": f"Approve {action}?",
         }
     )
 
     return {
-        "approval": approval_result,
+        "approval": approval,
     }
 
 
-def route_after_agent(state: AgentState):
-    last_message = state["messages"][-1]
+def start(state: AgentState):
+    request = state["messages"][0].content
 
-    if not last_message.tool_calls:
-        original_request = state["messages"][0].content.lower()
+    action = detect_git_action(request)
 
-        if "commit" in original_request:
-            return "commit_message"
+    if action == "add":
+        files = extract_files(request)
 
-        return "end"
+        return {
+            "action": "git_add",
+            "arguments": {
+                "files": files,
+            },
+        }
 
-    tool_name = last_message.tool_calls[0]["name"]
+    if action == "commit":
+        return {
+            "action": "git_commit",
+            "arguments": {},
+        }
 
-    if tool_name in {"git_add", "git_commit"}:
+    return {
+        "action": "unknown",
+        "arguments": {},
+    }
+
+
+def route_after_start(state: AgentState):
+    if state["action"] == "git_add":
         return "approval"
 
-    return "tools"
-
-
-def route_after_approval(state: AgentState):
-    if state["approval"]:
-        return "tools"
+    if state["action"] == "git_commit":
+        return "commit_message"
 
     return "end"
 
 
-tool_node = ToolNode(tools)
+def prepare_commit(state: AgentState):
+    """Convert the supplied commit message into git_commit arguments."""
+
+    message = state["messages"][-1].content
+
+    message = message.replace("Commit message:", "").strip()
+
+    return {
+        "arguments": {
+            "message": message,
+        }
+    }
+
+
+def route_after_commit_message(state: AgentState):
+    return "approval"
+
+
+def execute_git(state: AgentState):
+    """Execute the approved Git operation."""
+
+    action = state["action"]
+    arguments = state["arguments"]
+
+    if action == "git_add":
+        files = arguments.get("files")
+
+        if files:
+            result = git_add.invoke({"files": files})
+        else:
+            result = git_add.invoke({"files": None})
+
+    elif action == "git_commit":
+        result = git_commit.invoke(
+            {
+                "message": arguments["message"],
+            }
+        )
+
+    else:
+        result = "Unknown Git operation."
+
+    return {
+        "result": result,
+    }
+
+
+def route_after_approval(state: AgentState):
+    if state["approval"]:
+        return "execute"
+
+    return "end"
+
 
 graph_builder = StateGraph(AgentState)
 
-graph_builder.add_node("agent", agent)
+graph_builder.add_node("start", start)
 graph_builder.add_node("commit_message", request_commit_message)
-graph_builder.add_node("approval", approval)
-graph_builder.add_node("tools", tool_node)
+graph_builder.add_node("prepare_commit", prepare_commit)
+graph_builder.add_node("approval", request_approval)
+graph_builder.add_node("execute", execute_git)
 
-graph_builder.add_edge(START, "agent")
+graph_builder.add_edge(START, "start")
 
 graph_builder.add_conditional_edges(
-    "agent",
-    route_after_agent,
+    "start",
+    route_after_start,
     {
-        "commit_message": "commit_message",
         "approval": "approval",
-        "tools": "tools",
+        "commit_message": "commit_message",
         "end": END,
     },
 )
 
-graph_builder.add_edge("commit_message", "agent")
+graph_builder.add_edge(
+    "commit_message",
+    "prepare_commit",
+)
+
+graph_builder.add_conditional_edges(
+    "prepare_commit",
+    route_after_commit_message,
+    {
+        "approval": "approval",
+    },
+)
 
 graph_builder.add_conditional_edges(
     "approval",
     route_after_approval,
     {
-        "tools": "tools",
+        "execute": "execute",
         "end": END,
     },
 )
 
-graph_builder.add_edge("tools", "agent")
+graph_builder.add_edge("execute", END)
 
 checkpointer = InMemorySaver()
 

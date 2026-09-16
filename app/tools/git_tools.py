@@ -39,7 +39,7 @@ def git_diff() -> str:
 
 @tool
 def git_add(files: list[str] | None = None) -> str:
-    """Stage files for the next commit. If no files are specified, stage all files."""
+    """Stage files. If no files are specified, stage all files."""
 
     if files:
         command = ["git", "add", *files]

@@ -6,5 +6,10 @@ from langgraph.graph.message import add_messages
 
 class AgentState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
+
+    action: str
+    arguments: dict
+
     approval: bool
+
     result: str
