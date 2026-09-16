@@ -1,11 +1,13 @@
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph import END, StateGraph
+from langgraph.graph import END, START, StateGraph
+from langgraph.prebuilt import ToolNode
 from langgraph.types import interrupt
 
 from app.config import GOOGLE_API_KEY
 from app.state import AgentState
-from app.tools.git_tools import git_add
+from app.tools.git_tools import git_add, git_commit, git_diff, git_status
 
 
 llm = ChatGoogleGenerativeAI(
@@ -13,94 +15,138 @@ llm = ChatGoogleGenerativeAI(
     google_api_key=GOOGLE_API_KEY,
 )
 
+tools = [git_status, git_diff, git_add, git_commit]
 
-def inspect_request(state: AgentState):
-    """Use the LLM to identify files requested by the user."""
+llm_with_tools = llm.bind_tools(tools)
 
-    prompt = f"""
-You are a Git assistant.
 
-User request:
-{state["user_request"]}
-
-Identify the files the user wants to stage.
-
-Return ONLY a comma-separated list of file paths.
-Do not explain anything.
-
-Example:
-app/server.py, app/state.py
-"""
-
-    response = llm.invoke(prompt)
-
-    files = [
-        file.strip()
-        for file in response.content.split(",")
-        if file.strip()
+def agent(state: AgentState):
+    messages = [
+        SystemMessage(
+            content=(
+                "You are a Git assistant.\n\n"
+                "Git add rules:\n"
+                "- If the user asks to add or stage all files, call git_add "
+                "without specifying files.\n"
+                "- If the user specifies file paths, call git_add with only "
+                "those files.\n"
+                "- Never stage unspecified files.\n\n"
+                "Git commit rules:\n"
+                "- If the user asks to commit and provides a commit message, "
+                "call git_commit with that message.\n"
+                "- If the user asks to commit but does not provide a message, "
+                "do not invent one."
+            )
+        ),
+        *state["messages"],
     ]
 
+    response = llm_with_tools.invoke(messages)
+
     return {
-        "files": files,
+        "messages": [response],
     }
 
 
-def ask_approval(state: AgentState):
-    """Ask the human before modifying the repository."""
-
-    approval = interrupt(
+def request_commit_message(state: AgentState):
+    commit_message = interrupt(
         {
-            "action": "git_add",
-            "files": state["files"],
-            "message": f"Approve staging {state['files']}?",
+            "type": "commit_message",
+            "message": "Please provide a commit message.",
         }
     )
 
     return {
-        "approval": approval,
+        "messages": [
+            HumanMessage(
+                content=f"Use this commit message: {commit_message}"
+            )
+        ]
     }
 
 
-def execute_git_add(state: AgentState):
-    """Execute git add after approval."""
+def approval(state: AgentState):
+    last_message = state["messages"][-1]
 
-    result = git_add(state["files"])
+    tool_call = last_message.tool_calls[0]
+
+    approval_result = interrupt(
+        {
+            "type": "approval",
+            "action": tool_call["name"],
+            "arguments": tool_call["args"],
+            "message": f"Approve {tool_call['name']}?",
+        }
+    )
 
     return {
-        "result": result,
+        "approval": approval_result,
     }
+
+
+def route_after_agent(state: AgentState):
+    last_message = state["messages"][-1]
+
+    if not last_message.tool_calls:
+        original_request = state["messages"][0].content.lower()
+
+        if "commit" in original_request:
+            return "commit_message"
+
+        return "end"
+
+    tool_name = last_message.tool_calls[0]["name"]
+
+    if tool_name in {"git_add", "git_commit"}:
+        return "approval"
+
+    return "tools"
 
 
 def route_after_approval(state: AgentState):
     if state["approval"]:
-        return "approved"
+        return "tools"
 
-    return "rejected"
+    return "end"
 
+
+tool_node = ToolNode(tools)
 
 graph_builder = StateGraph(AgentState)
 
-graph_builder.add_node("inspect", inspect_request)
-graph_builder.add_node("approval", ask_approval)
-graph_builder.add_node("git_add", execute_git_add)
+graph_builder.add_node("agent", agent)
+graph_builder.add_node("commit_message", request_commit_message)
+graph_builder.add_node("approval", approval)
+graph_builder.add_node("tools", tool_node)
 
-graph_builder.set_entry_point("inspect")
+graph_builder.add_edge(START, "agent")
 
-graph_builder.add_edge("inspect", "approval")
+graph_builder.add_conditional_edges(
+    "agent",
+    route_after_agent,
+    {
+        "commit_message": "commit_message",
+        "approval": "approval",
+        "tools": "tools",
+        "end": END,
+    },
+)
+
+graph_builder.add_edge("commit_message", "agent")
 
 graph_builder.add_conditional_edges(
     "approval",
     route_after_approval,
     {
-        "approved": "git_add",
-        "rejected": END,
+        "tools": "tools",
+        "end": END,
     },
 )
 
-graph_builder.add_edge("git_add", END)
+graph_builder.add_edge("tools", "agent")
 
 checkpointer = InMemorySaver()
 
 graph = graph_builder.compile(
-    checkpointer=checkpointer
+    checkpointer=checkpointer,
 )

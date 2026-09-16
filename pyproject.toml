@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "langchain>=1.4.0",
+    "langchain-google-genai>=4.4.0",
     "langgraph>=1.2.11",
     "mcp[cli]>=2.2.0",
     "python-dotenv>=1.2.3",

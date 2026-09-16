@@ -1,3 +1,4 @@
+from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from app.graph import graph
@@ -8,39 +9,63 @@ def main():
 
     config = {
         "configurable": {
-            "thread_id": "github-agent-1"
+            "thread_id": "github-agent-1",
         }
     }
 
-    state = {
-        "user_request": user_request,
-        "files": [],
+    initial_state = {
+        "messages": [HumanMessage(content=user_request)],
         "approval": False,
+        "commit_message": "",
         "result": "",
     }
 
-    result = graph.invoke(state, config)
+    result = graph.invoke(initial_state, config)
 
-    # Graph paused at interrupt()
-    if "__interrupt__" in result:
-        interrupt_data = result["__interrupt__"][0].value
+    # Agent needs more information
+    last_message = result["messages"][-1]
 
-        print("\nHuman approval required:")
-        print(f"Action: {interrupt_data['action']}")
-        print(f"Files: {interrupt_data['files']}")
-        print(f"Message: {interrupt_data['message']}")
-
-        answer = input("\nApprove? (yes/no): ").strip().lower()
-
-        approved = answer == "yes"
+    if not last_message.tool_calls and "commit message" in str(last_message.content).lower():
+        commit_message = input("\nEnter commit message: ")
 
         result = graph.invoke(
-            Command(resume=approved),
+            Command(
+                resume=None,
+                update={
+                    "messages": [
+                        HumanMessage(
+                            content=f"Use this commit message: {commit_message}"
+                        )
+                    ]
+                },
+            ),
             config,
         )
 
-    print("\nResult:")
-    print(result.get("result", "Operation cancelled."))
+    # Human approval
+    if "__interrupt__" in result:
+        interrupt_data = result["__interrupt__"][0].value
+
+        print("\n========== APPROVAL REQUIRED ==========")
+        print(f"Action: {interrupt_data['action']}")
+        print(f"Arguments: {interrupt_data['arguments']}")
+        print(f"Message: {interrupt_data['message']}")
+        print("=======================================")
+
+        answer = input("\nApprove? (yes/no): ").strip().lower()
+
+        result = graph.invoke(
+            Command(resume=answer == "yes"),
+            config,
+        )
+
+    print("\n========== RESULT ==========")
+
+    for message in result["messages"]:
+        if message.content:
+            print(message.content)
+
+    print("============================")
 
 
 if __name__ == "__main__":

@@ -38,14 +38,18 @@ def git_diff() -> str:
 
 
 @tool
-def git_add(files: list[str]) -> str:
-    """Stage the specified files for the next commit."""
+def git_add(files: list[str] | None = None) -> str:
+    """Stage files for the next commit. If no files are specified, stage all files."""
 
-    if not files:
-        return "No files provided."
+    if files:
+        command = ["git", "add", *files]
+        description = ", ".join(files)
+    else:
+        command = ["git", "add", "."]
+        description = "all files"
 
     result = subprocess.run(
-        ["git", "add", *files],
+        command,
         capture_output=True,
         text=True,
         check=False,
@@ -54,12 +58,12 @@ def git_add(files: list[str]) -> str:
     if result.returncode != 0:
         return f"Git error: {result.stderr.strip()}"
 
-    return f"Successfully staged: {', '.join(files)}"
+    return f"Successfully staged {description}."
 
 
 @tool
 def git_commit(message: str) -> str:
-    """Create a Git commit with the specified message."""
+    """Create a Git commit with the specified commit message."""
 
     if not message.strip():
         return "Commit message cannot be empty."
