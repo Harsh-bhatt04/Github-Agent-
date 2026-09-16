@@ -1,8 +1,10 @@
-from typing import TypedDict
+from typing import Annotated, TypedDict
+
+from langchain_core.messages import AnyMessage
+from langgraph.graph.message import add_messages
 
 
 class AgentState(TypedDict):
-    user_request: str
-    files: list[str]
+    messages: Annotated[list[AnyMessage], add_messages]
     approval: bool
     result: str
