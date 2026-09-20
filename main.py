@@ -9,7 +9,7 @@ from app.graph import build_graph
 async def main():
     graph = await build_graph()
 
-    user_request = input("What do you want to do? ").strip()
+    user_request = input("What do you want to ask? ").strip()
 
     if not user_request:
         print("No request provided.")
