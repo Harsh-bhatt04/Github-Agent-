@@ -1,70 +1,112 @@
+import asyncio
+
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
-from app.graph import graph
+from app.graph import build_graph
 
 
-def main():
-    user_request = input("What do you want to do? ")
+async def main():
+    graph = await build_graph()
+
+    user_request = input("What do you want to do? ").strip()
+
+    if not user_request:
+        print("No request provided.")
+        return
 
     config = {
         "configurable": {
-            "thread_id": "github-agent-1",
+            "thread_id": "github-agent-1"
         }
     }
 
-    initial_state = {
+    state = {
         "messages": [
             HumanMessage(content=user_request)
         ],
         "action": "",
         "arguments": {},
+        "tool_call_id": "",
         "approval": False,
         "result": "",
     }
 
-    result = graph.invoke(
-        initial_state,
+    result = await graph.ainvoke(
+        state,
         config,
     )
 
     while "__interrupt__" in result:
+
         interrupt_data = result["__interrupt__"][0].value
 
-        if interrupt_data["type"] == "commit_message":
+        interrupt_type = interrupt_data.get("type")
 
-            print("\n========== COMMIT MESSAGE ==========")
-            print(interrupt_data["message"])
-            print("=====================================")
+        if interrupt_type == "commit_message":
 
-            answer = input("\nCommit message: ")
+            while True:
+                message = input(
+                    "Commit message: "
+                ).strip()
 
-            result = graph.invoke(
-                Command(resume=answer),
+                if message:
+                    break
+
+                print("Commit message cannot be empty.")
+
+            result = await graph.ainvoke(
+                Command(resume=message),
                 config,
             )
 
-        elif interrupt_data["type"] == "approval":
+        elif interrupt_type == "approval":
 
-            print("\n========== APPROVAL REQUIRED ==========")
-            print(f"Action: {interrupt_data['action']}")
-            print(f"Arguments: {interrupt_data['arguments']}")
-            print(f"Message: {interrupt_data['message']}")
-            print("=======================================")
+            action = interrupt_data["action"]
+            arguments = interrupt_data["arguments"]
+
+            print("\n--------------------------------")
+            print("Human Approval Required")
+            print("--------------------------------")
+            print(f"Action: {action}")
+            print(f"Arguments: {arguments}")
 
             answer = input(
-                "\nApprove? (yes/no): "
+                "Approve? (yes/no): "
             ).strip().lower()
 
-            result = graph.invoke(
-                Command(resume=answer == "yes"),
+            approved = answer in {
+                "yes",
+                "y",
+            }
+
+            result = await graph.ainvoke(
+                Command(resume=approved),
                 config,
             )
 
-    print("\n========== RESULT ==========")
-    print(result.get("result", ""))
-    print("============================")
+        else:
+            print(
+                "Unknown interrupt:",
+                interrupt_data,
+            )
+            return
+
+    if result.get("result"):
+        print("\nResult:")
+        print(result["result"])
+        return
+
+    # If the agent simply responded without using a tool.
+    messages = result.get("messages", [])
+
+    if messages:
+        last_message = messages[-1]
+
+        if hasattr(last_message, "content"):
+            print("\nAgent:")
+            print(last_message.content)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

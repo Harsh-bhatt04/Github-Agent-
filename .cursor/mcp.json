@@ -1,14 +1,14 @@
 {
-    "mcpServers": {
-      "github": {
-        "type": "stdio",
-        "command": "uv",
-        "args": [
-          "run",
-          "mcp",
-          "run",
-          "/Users/harshbhatt/Desktop/Development/AI/Github-AgenticAI/app/server.py"
-        ]
-      }
+  "mcpServers": {
+    "github": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "-m",
+        "app.server"
+      ]
     }
   }
+}

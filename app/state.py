@@ -8,7 +8,10 @@ class AgentState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
 
     action: str
+
     arguments: dict
+
+    tool_call_id: str
 
     approval: bool
 
